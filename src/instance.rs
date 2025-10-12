@@ -608,9 +608,9 @@ async fn wait_task(
 
                 // Disconnect all current clients
                 //
-                // We'll rely on the editor client to restart the ra-multiplex client,
-                // start a new connection and we'll spawn another instance like we'd with
-                // any other new client.
+                // We'll rely on the editor client to restart the lspmux client,
+                // start a new connection and we'll spawn another instance like
+                // we'd with any other new client.
                 instance.clients.lock().await.clear();
 
                 match exit {

@@ -2,8 +2,8 @@ use std::env;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use ra_multiplex::config::Config;
-use ra_multiplex::{ext, proxy, server};
+use lspmux::config::Config;
+use lspmux::{ext, proxy, server};
 use tracing::info;
 
 #[derive(Parser, Debug)]
@@ -16,13 +16,12 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Cmd {
-    /// Connect to an ra-mux server [default]
+    /// Connect to an lspmux server [default]
     Client {
         /// Path to the LSP server executable
         #[arg(
             long = "server-path",
-            alias = "ra-mux-server",
-            env = "RA_MUX_SERVER",
+            env = "LSPMUX_SERVER",
             default_value = "rust-analyzer",
             name = "SERVER_PATH"
         )]
@@ -33,7 +32,7 @@ enum Cmd {
         args: Vec<String>,
     },
 
-    /// Start a ra-mux server
+    /// Start a lpsmux server
     Server {},
 
     /// Print server status
@@ -78,7 +77,7 @@ async fn main() -> Result<()> {
         Some(Cmd::Config {}) => ext::config(&config),
         Some(Cmd::Reload {}) => ext::reload(&config).await,
         None => {
-            let server_path = env::var("RA_MUX_SERVER").unwrap_or_else(|_| "rust-analyzer".into());
+            let server_path = env::var("LSPMUX_SERVER").unwrap_or_else(|_| "rust-analyzer".into());
             proxy::run(&config, server_path, vec![]).await
         }
     }

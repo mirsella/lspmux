@@ -6,6 +6,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [v0.3.0] - 2025-10-12
+
+### Changed
+
+- renamed project from `ra-multiplex` to `lspmux` to better reflect that it supports more language servers than just rust-analyzer
+
+
+## [v0.2.6] - 2025-10-12
+
+### Changed
+
+- changed license from MIT to EUPL-1.2
+- migrated repository to Codeberg <https://codeberg.org/p2502/lspmux>
+
+
 ## [v0.2.5] - 2024-08-08
 
 ### Added

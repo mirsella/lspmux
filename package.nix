@@ -13,4 +13,5 @@ rustPlatform.buildRustPackage {
   version = "${manifest.package.version}${versionSuffix}";
   src = ./.;
   cargoLock.lockFile = ./Cargo.lock;
+  meta.mainProgram = manifest.package.name;
 }

@@ -1,4 +1,4 @@
-//! LSP-mux (ra-multiplex) specific protocol extensions
+//! lspmux specific protocol extensions
 
 use std::collections::BTreeMap;
 use std::str::FromStr;
