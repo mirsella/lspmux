@@ -520,14 +520,22 @@ async fn initialize_handshake(
         .await
         .context("send initialize request")?;
 
-    let res = match reader
-        .read_message()
-        .await
-        .context("receive initialize response")?
-        .context("stream ended")?
-    {
-        Message::ResponseSuccess(res) if res.id == request_id => res,
-        _ => bail!("first server message was not initialize response"),
+    let res = loop {
+        match reader
+            .read_message()
+            .await
+            .context("receive initialize response")?
+            .context("stream ended")?
+        {
+            Message::ResponseSuccess(res) if res.id == request_id => break res,
+            msg => {
+                warn!(
+                    ?msg,
+                    "ignoring message while waiting for initialize response"
+                );
+                // bail!("first server message was not initialize response")
+            }
+        }
     };
     let result = serde_json::from_value(res.result).context("parse initialize response result")?;
 
