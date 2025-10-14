@@ -642,14 +642,37 @@ async fn initialize_handshake(
         .await
         .context("send initialize request")?;
 
-    let res = match reader
-        .read_message()
-        .await
-        .context("receive initialize response")?
-        .context("stream ended")?
-    {
-        Message::ResponseSuccess(res) if res.id == request_id => res,
-        _ => bail!("first server message was not initialize response"),
+    // TODO: Ignoring messages here is not ideal. The spec explicitly permits
+    // sending `window/showMessage`, `window/logMessage`, `telemetry/event`,
+    // `window/showMessageRequest` and when configured also `$/progress` [1],
+    // which we should forward to the client(s). Not forwarding them means
+    // the server will appear unresponsive while it's initializing.
+    //
+    // [1]: https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#initialize
+    //
+    // FIXME: The larger problem with this approach is that some servers (e.g.
+    // `kotlin-language-server`) do not respond with an initialize response
+    // immediately, but block until they've indexed the whole project. And
+    // we hold the `InstanceMap` lock _the whole time_ this loop is waiting,
+    // the lock held in `instance::get_or_spawn` -> `instance::spawn` ->
+    // `instance::initialize_handshake` which blocks _any_ connection to the
+    // lspmux client, as all the functions called from `client::process` sooner
+    // or later need to lock the `InstanceMap` as well.
+    let res = loop {
+        match reader
+            .read_message()
+            .await
+            .context("receive initialize response")?
+            .context("stream ended")?
+        {
+            Message::ResponseSuccess(res) if res.id == request_id => break res,
+            msg => {
+                warn!(
+                    ?msg,
+                    "ignoring message while waiting for initialize response"
+                );
+            }
+        }
     };
     let result = serde_json::from_value(res.result).context("parse initialize response result")?;
 
