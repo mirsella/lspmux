@@ -73,7 +73,7 @@ pub fn config(config: &Config) -> Result<()> {
     Ok(())
 }
 
-pub async fn status(config: &Config, json: bool) -> Result<()> {
+pub async fn status(config: &Config, json: bool, verbose: bool) -> Result<()> {
     let res = ext_request::<StatusResponse>(config, ext::Request::Status {}).await?;
 
     if json {
@@ -86,17 +86,27 @@ pub async fn status(config: &Config, json: bool) -> Result<()> {
         println!("- Instance");
         println!("  pid: {}", instance.pid);
         println!("  server: {:?} {:?}", instance.server, instance.args);
+        println!("  path: {:?}", instance.workspace_root);
         if !instance.env.is_empty() {
-            println!("  server env:");
-            for (key, val) in instance.env {
-                println!("    {key} = {val}");
+            if verbose {
+                println!("  env:");
+                for (key, val) in instance.env {
+                    println!("    {key} = {val}");
+                }
+            } else {
+                print!("  env:");
+                for key in instance.env.keys() {
+                    print!(" {key}");
+                }
+                println!("");
             }
         }
-        println!("  path: {:?}", instance.workspace_root);
         println!("  last used: {}s ago", instance.idle_for);
-        println!("  registered dynamic capabilities:");
-        for cap in instance.registered_dyn_capabilities {
-            println!("    - {}", cap);
+        if verbose {
+            println!("  registered dynamic capabilities:");
+            for cap in instance.registered_dyn_capabilities {
+                println!("    - {}", cap);
+            }
         }
         println!("  clients:");
         for client in instance.clients {

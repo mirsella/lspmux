@@ -40,6 +40,10 @@ enum Cmd {
         /// Output data as machine readable JSON
         #[clap(long = "json", default_value = "false")]
         json: bool,
+
+        /// Output more information
+        #[clap(short = 'v', long = "verbose", default_value = "false")]
+        verbose: bool,
     },
 
     /// Print server configuration
@@ -73,7 +77,7 @@ async fn main() -> Result<()> {
     match cli.command {
         Some(Cmd::Server {}) => server::run(&config).await,
         Some(Cmd::Client { server, args }) => proxy::run(&config, server, args).await,
-        Some(Cmd::Status { json }) => ext::status(&config, json).await,
+        Some(Cmd::Status { json, verbose }) => ext::status(&config, json, verbose).await,
         Some(Cmd::Config {}) => ext::config(&config),
         Some(Cmd::Reload {}) => ext::reload(&config).await,
         None => {
