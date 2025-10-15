@@ -1,4 +1,3 @@
-use std::collections::BTreeMap;
 use std::env;
 
 use anyhow::{bail, Context as _, Result};
@@ -16,12 +15,30 @@ pub async fn run(config: &Config, server: String, args: Vec<String>) -> Result<(
         .ok()
         .and_then(|path| path.to_str().map(String::from));
 
-    let mut env = BTreeMap::new();
-    for key in &config.pass_environment {
-        if let Ok(val) = std::env::var(key) {
-            env.insert(key.clone(), val);
-        }
-    }
+    let positive_filters = config
+        .pass_environment
+        .iter()
+        .filter(|f| !f.negative)
+        .collect::<Vec<_>>();
+    let negative_filters = config
+        .pass_environment
+        .iter()
+        .filter(|f| f.negative)
+        .collect::<Vec<_>>();
+
+    let env = std::env::vars()
+        .filter(|(key, _val)| {
+            // Must match at least one positive filter (by default a "*" is included)
+            positive_filters
+                .iter()
+                .any(|filter| filter.pattern.matches(&key))
+                &&
+            // Cannot match any negative filters
+            !negative_filters
+                .iter()
+                .any(|filter| filter.pattern.matches(&key))
+        })
+        .collect();
 
     let mut stream = Stream::connect(&config.connect)
         .await

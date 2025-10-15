@@ -151,19 +151,32 @@ connect = ["127.0.0.1", 27631] # same as `listen`
 # <https://docs.rs/env_logger/0.9.0/env_logger/index.html#enabling-logging>
 log_filters = "info"
 
-# environment variable names passed from `lspmux client` to the server
+# filter environment variables passed from `lspmux client` to the server
 #
-# By default no variables are passed and all servers are spawned in the same
-# environment as the `lspmux server` is.
-# When a name like "LD_LIBRARY_PATH" is specified, the proxy reads the variable
-# value from its environment and passes the variable with the value set in the
-# proxy environment to the server, which then passes it further to the server
-# executable.
+# The filters are separated into positive and negative (prepended by `!`). For
+# an environment variable to be passed its name must match at least one positive
+# filter (the default filter set is ["*"] which passes everything), and must not
+# match any negative filters. The full glob syntax is described in the `glob`
+# crate documentation <https://docs.rs/glob/latest/glob/struct.Pattern.html>,
+# except the leading `!` for negative patterns which is parsed and removed by
+# `lspmux`.
 #
-# If "PATH" is specified here then the PATH from the client environment is
-# going to be used for looking up a relative `--server-path`.
+# If the "PATH" variable is passed to the server then it'll be also used for
+# looking up a relative argument to `--server-path`.
+#
+# One way to filter variables is to explicitly list every variable you want to
+# pass to the language server.
+# (This is backward compatible with behaviour prior to v0.3.1)
+#
 # Example: pass_environment = ["PATH", "LD_LIBRARY_PATH"]
-pass_environment = []
+#
+# Another option is to allow everything and then use negative filters to exclude
+# variables which cause problems - variables like WINDOWID set by the terminal
+# emulator which would cause `lspmux` to spawn a new language server for every
+# connected client, defeating its purpose.
+#
+# Example: pass_environment = ["*", "!DESKTOP_STARTUP_ID", "!WINDOWID", "!ALACRITTY_*"]
+pass_environment = ["*"]
 ```
 
 

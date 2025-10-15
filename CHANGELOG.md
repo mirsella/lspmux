@@ -19,6 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - reduced the number of dependencies and dependency features to improve compile times slightly
 - make `status` subcommand output less verbose by default
+- `pass_environment` config option now uses globbing and supports negative filters. this lets users pass all environment variables except some specific ones
 
 
 ## [v0.3.0] - 2025-10-12
