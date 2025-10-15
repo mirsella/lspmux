@@ -151,19 +151,19 @@ connect = ["127.0.0.1", 27631] # same as `listen`
 # <https://docs.rs/env_logger/0.9.0/env_logger/index.html#enabling-logging>
 log_filters = "info"
 
-# environment variable names passed from `lspmux client` to the server
+# filter environment variables passed from `lspmux client` to the server
 #
-# By default no variables are passed and all servers are spawned in the same
-# environment as the `lspmux server` is.
-# When a name like "LD_LIBRARY_PATH" is specified, the proxy reads the variable
-# value from its environment and passes the variable with the value set in the
-# proxy environment to the server, which then passes it further to the server
-# executable.
+# By default all variables are passed. When this is not desirable a smaller
+# subset can be specified. The proxy reads those variables' value from its
+# environment and passes the values to the server, which then passes it further
+# to the language server executable.
 #
-# If "PATH" is specified here then the PATH from the client environment is
-# going to be used for looking up a relative `--server-path`.
+# If "PATH" (or "all" and "PATH" exists) is specified here then the PATH
+# from the client environment is going to be used for looking up a relative
+# `--server-path`.
+#
 # Example: pass_environment = ["PATH", "LD_LIBRARY_PATH"]
-pass_environment = []
+pass_environment = ["*"]
 ```
 
 
