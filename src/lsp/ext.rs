@@ -168,7 +168,7 @@ pub struct Instance {
     pub env: BTreeMap<String, String>,
     pub workspace_root: String,
     pub registered_dyn_capabilities: Vec<String>,
-    pub last_used: i64,
+    pub idle_for: i64,
     pub clients: Vec<Client>,
 }
 

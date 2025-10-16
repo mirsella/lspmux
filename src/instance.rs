@@ -6,8 +6,8 @@ use std::ops::Deref;
 use std::path::Path;
 use std::process::Stdio;
 use std::sync::atomic::{AtomicI64, Ordering};
-use std::sync::Arc;
-use std::time::Duration;
+use std::sync::{Arc, LazyLock};
+use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
 use serde_json::{json, Value};
@@ -60,7 +60,8 @@ pub struct Instance {
 
     /// Last time a message was sent to this instance
     ///
-    /// Uses UTC unix timestamp ([utc_now] function)
+    /// Uses seconds elapsed since an arbitrary point in the past, as returned
+    /// by [`elapsed_seconds`].
     last_used: AtomicI64,
 }
 
@@ -98,20 +99,24 @@ impl Deref for ClientData {
     }
 }
 
-// Current unix timestamp with second precission
-fn utc_now() -> i64 {
-    time::OffsetDateTime::now_utc().unix_timestamp()
+// Elapsed seconds since an arbitrary [`Instant`] when this function was called for the first time
+fn elapsed_seconds() -> i64 {
+    static START: LazyLock<Instant> = LazyLock::new(Instant::now);
+    START.elapsed().as_secs() as i64
 }
 
 impl Instance {
     /// Mark the instance as used
     pub fn keep_alive(&self) {
-        self.last_used.store(utc_now(), Ordering::Relaxed);
+        self.last_used.store(elapsed_seconds(), Ordering::Relaxed);
     }
 
     /// How many seconds is the instance idle for
     pub fn idle(&self) -> i64 {
-        i64::max(0, utc_now() - self.last_used.load(Ordering::Relaxed))
+        i64::max(
+            0,
+            elapsed_seconds() - self.last_used.load(Ordering::Relaxed),
+        )
     }
 
     pub fn initialize_result(&self) -> lsp::InitializeResult {
@@ -316,7 +321,7 @@ impl Instance {
             args: self.key.args.clone(),
             env: self.key.env.clone(),
             workspace_root: self.key.workspace_root.clone(),
-            last_used: self.last_used.load(Ordering::Relaxed),
+            idle_for: self.idle(),
             clients,
             registered_dyn_capabilities,
         }
@@ -481,7 +486,7 @@ async fn spawn(
         clients: Mutex::default(),
         dynamic_capabilities: Mutex::default(),
         close: Notify::new(),
-        last_used: AtomicI64::new(utc_now()),
+        last_used: AtomicI64::new(elapsed_seconds()),
     });
 
     task::spawn(stdout_task(instance.clone(), reader).in_current_span());
