@@ -351,6 +351,30 @@ impl InstanceMap {
             .map(|(_, inst)| inst.deref())
     }
 
+    pub async fn kill_matching(
+        &self,
+        cwd: &str,
+        server_filter: Option<&str>,
+        unused_only: bool,
+    ) -> Result<()> {
+        for (key, instance) in self.0.iter() {
+            if !Path::new(cwd).starts_with(&key.workspace_root) {
+                continue;
+            }
+            if matches!(server_filter, Some(server_filter) if key.server != server_filter) {
+                continue;
+            }
+
+            if unused_only && !instance.clients.lock().await.is_empty() {
+                continue;
+            }
+
+            instance.close.notify_one();
+        }
+
+        Ok(())
+    }
+
     pub async fn get_status(&self) -> ext::StatusResponse {
         let mut instances = Vec::with_capacity(self.0.len());
         for instance in self.0.values() {

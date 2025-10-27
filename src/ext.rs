@@ -130,3 +130,21 @@ pub async fn reload(config: &Config) -> Result<()> {
     ext_request::<IgnoredAny>(config, ext::Request::Reload { cwd }).await?;
     Ok(())
 }
+
+pub async fn kill(config: &Config, server_filter: Option<String>, unused_only: bool) -> Result<()> {
+    let cwd = env::current_dir()
+        .context("unable to get current_dir")?
+        .to_str()
+        .context("current_dir is not valid utf-8")?
+        .to_owned();
+    ext_request::<IgnoredAny>(
+        config,
+        ext::Request::Kill {
+            cwd,
+            server_filter,
+            unused_only,
+        },
+    )
+    .await?;
+    Ok(())
+}

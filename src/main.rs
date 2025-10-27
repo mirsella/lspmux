@@ -38,11 +38,11 @@ enum Cmd {
     /// Print server status
     Status {
         /// Output data as machine readable JSON
-        #[clap(long = "json", default_value = "false")]
+        #[arg(long = "json", default_value = "false")]
         json: bool,
 
         /// Output more information
-        #[clap(short = 'v', long = "verbose", default_value = "false")]
+        #[arg(short = 'v', long = "verbose", default_value = "false")]
         verbose: bool,
     },
 
@@ -54,6 +54,16 @@ enum Cmd {
     /// For rust-analyzer send the `rust-analyzer/reloadWorkspace` extension request.
     /// Do nothing for other language servers.
     Reload {},
+
+    /// Kill language server
+    Kill {
+        /// When specified only matching language servers will be killed
+        server: Option<String>,
+
+        /// When enabled only unused language servers will be killed
+        #[arg(long = "unused")]
+        unused: bool,
+    },
 }
 
 #[tokio::main(flavor = "current_thread")]
@@ -80,6 +90,7 @@ async fn main() -> Result<()> {
         Some(Cmd::Status { json, verbose }) => ext::status(&config, json, verbose).await,
         Some(Cmd::Config {}) => ext::config(&config),
         Some(Cmd::Reload {}) => ext::reload(&config).await,
+        Some(Cmd::Kill { server, unused }) => ext::kill(&config, server, unused).await,
         None => {
             let server_path = env::var("LSPMUX_SERVER").unwrap_or_else(|_| "rust-analyzer".into());
             proxy::run(&config, server_path, vec![]).await

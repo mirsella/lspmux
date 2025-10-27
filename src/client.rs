@@ -81,6 +81,11 @@ pub async fn process(
         }
         ext::Request::Status {} => status(instance_map, writer).await,
         ext::Request::Reload { cwd } => reload(cwd, instance_map, writer).await,
+        ext::Request::Kill {
+            cwd,
+            server_filter,
+            unused_only,
+        } => kill(cwd, server_filter, unused_only, instance_map, writer).await,
     }
 }
 
@@ -159,6 +164,29 @@ async fn reload(
             .context("writing response")?;
         debug!(?cwd, "no instance found for path");
     }
+
+    Ok(())
+}
+
+async fn kill(
+    cwd: String,
+    server_filter: Option<String>,
+    unused_only: bool,
+    instance_map: Arc<Mutex<InstanceMap>>,
+    mut writer: LspWriter<OwnedWriteHalf>,
+) -> Result<()> {
+    instance_map
+        .lock()
+        .await
+        .kill_matching(&cwd, server_filter.as_deref(), unused_only)
+        .await?;
+
+    writer
+        .write_message(&Message::ResponseSuccess(ResponseSuccess::null(
+            RequestId::Number(0),
+        )))
+        .await
+        .context("writing response")?;
 
     Ok(())
 }

@@ -151,6 +151,19 @@ pub enum Request {
         /// `cwd.starts_with(workspace_root)` is true
         cwd: String,
     },
+
+    /// Kill matching instances
+    Kill {
+        /// Selects any instance where `cwd.starts_with(workspace_root)` is true
+        cwd: String,
+
+        /// If presents selects only instances where
+        /// `server_filter == instance_key.server`
+        server_filter: Option<String>,
+
+        /// If true selects only instances with 0 clients
+        unused_only: bool,
+    },
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
