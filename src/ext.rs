@@ -42,7 +42,7 @@ where
                     root_uri: None,
                     capabilities: None,
                     trace: None,
-                    workspace_folders: Vec::new(),
+                    workspace_folders: None,
                 })
                 .unwrap(),
                 id: RequestId::Number(0),
