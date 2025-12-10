@@ -28,7 +28,7 @@
 //! - Progress notifications - contains a `token` property which could be used to identify the
 //!   client but the specification also says it has nothing to do with the request IDs
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
 macro_rules! impl_json_debug {
     ( $($type:ty),* $(,)? ) => {
@@ -75,9 +75,25 @@ pub struct InitializeParams {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub trace: Option<TraceValue>,
 
-    #[serde(skip_serializing_if = "Vec::is_empty", default = "Vec::new")]
-    pub workspace_folders: Vec<WorkspaceFolder>,
+    // LSP spec: "This property is only available if the client supports workspace folders.
+    //  It can be `null` if the client supports workspace folders but none are configured."
+    // We map null to an empty vec (indicating no folders are configured), and absent to None
+    //  (indicating workspace folders are unsupported).
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        default,
+        deserialize_with = "deserialize_workspace_folders"
+    )]
+    pub workspace_folders: Option<Vec<WorkspaceFolder>>,
 }
+
+fn deserialize_workspace_folders<'de, D>(deserializer: D) -> Result<Option<Vec<WorkspaceFolder>>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Deserialize::deserialize(deserializer).map(|v: Option<Vec<_>>| Some(v.unwrap_or_default()))
+}
+
 
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]

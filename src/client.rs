@@ -277,22 +277,23 @@ fn select_workspace_root<'a>(
     init_params: &'a InitializeParams,
     proxy_cwd: Option<&'a str>,
 ) -> Result<String> {
-    if init_params.workspace_folders.len() > 1 {
+    let workspace_folders = init_params.workspace_folders.as_deref().unwrap_or_default();
+    if workspace_folders.len() > 1 {
         // TODO Ideally we'd be looking up any server which has a superset of
         // workspace folders active possibly adding transforming the `initialize`
         // request into a few requests for adding workspace folders if the
         // server supports it. Buuut let's just run with supporting single-folder
         // workspaces only at first, it's probably the most common use-case anyway.
         warn!("initialize request with multiple workspace folders isn't supported");
-        debug!(workspace_folders = ?init_params.workspace_folders);
+        debug!(workspace_folders = ?workspace_folders);
     }
 
-    if init_params.workspace_folders.len() == 1 {
-        return parse_root_uri(&init_params.workspace_folders[0].uri)
+    if workspace_folders.len() == 1 {
+        return parse_root_uri(&workspace_folders[0].uri)
             .context("parse initParams.workspaceFolders[0].uri");
     }
 
-    assert!(init_params.workspace_folders.is_empty());
+    assert!(workspace_folders.is_empty());
 
     // Using the deprecated LSP fields `rootPath` or `rootUri` as fallback
     if let Some(root_uri) = &init_params.root_uri {
