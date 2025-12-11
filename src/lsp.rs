@@ -87,13 +87,14 @@ pub struct InitializeParams {
     pub workspace_folders: Option<Vec<WorkspaceFolder>>,
 }
 
-fn deserialize_workspace_folders<'de, D>(deserializer: D) -> Result<Option<Vec<WorkspaceFolder>>, D::Error>
+fn deserialize_workspace_folders<'de, D>(
+    deserializer: D,
+) -> Result<Option<Vec<WorkspaceFolder>>, D::Error>
 where
     D: Deserializer<'de>,
 {
     Deserialize::deserialize(deserializer).map(|v: Option<Vec<_>>| Some(v.unwrap_or_default()))
 }
-
 
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
