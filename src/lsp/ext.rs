@@ -191,7 +191,7 @@ mod tests {
     use serde::Serialize;
     use serde_json::{from_value, json, to_value, Value};
 
-    use crate::lsp::InitializationOptions;
+    use crate::lsp::{InitializationOptions, InitializeParams};
 
     fn test<T>(input: Value)
     where
@@ -268,5 +268,31 @@ mod tests {
                 "args": ["a", "b", "c"],
             },
         }))
+    }
+
+    #[test]
+    #[allow(non_snake_case)]
+    fn deserialize_InitializeParams_workspace_folders() {
+        assert!(matches!(
+            serde_json::from_str(r"{}"),
+            Ok(InitializeParams {
+                workspace_folders: None,
+                ..
+            })
+        ));
+        assert!(matches!(
+            serde_json::from_str(r#"{"workspaceFolders": null}"#),
+            Ok(InitializeParams {
+                workspace_folders: Some(workspace_folders),
+                ..
+            }) if workspace_folders.is_empty()
+        ));
+        assert!(matches!(
+            serde_json::from_str(r#"{"workspaceFolders": []}"#),
+            Ok(InitializeParams {
+                workspace_folders: Some(workspace_folders),
+                ..
+            }) if workspace_folders.is_empty()
+        ));
     }
 }
