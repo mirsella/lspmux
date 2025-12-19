@@ -28,6 +28,7 @@
 //! - Progress notifications - contains a `token` property which could be used to identify the
 //!   client but the specification also says it has nothing to do with the request IDs
 
+use anyhow::Result;
 use serde::{Deserialize, Deserializer, Serialize};
 
 macro_rules! impl_json_debug {
@@ -209,9 +210,53 @@ pub struct TextDocumentIdentifier {
     pub uri: String,
 }
 
+/// Parse LSP `URI` type as an absolute file path.
+pub fn parse_file_uri(root_uri: &str) -> Result<String> {
+    use percent_encoding::percent_decode_str;
+    use uriparse::URI;
+
+    let (scheme, _, mut path, _, _) = URI::try_from(root_uri)
+        .map_err(|e| anyhow::anyhow!("failed to parse URI: {}", e))?
+        .into_parts();
+
+    if scheme != uriparse::Scheme::File {
+        anyhow::bail!("only `file://` URIs are supported");
+    }
+
+    path.normalize(false);
+
+    let path = percent_decode_str(&path.to_string())
+        .decode_utf8()
+        .map_err(|e| anyhow::anyhow!("decoded URI was not valid utf-8: {}", e))?
+        .to_string();
+
+    // On windows the drive letter `C:/` gets interpreted as the first
+    // segment of an absolute path which results in an extra `/` at the
+    // beginning of the string representation which needs to be removed.
+    let path = match path.as_bytes() {
+        #[cfg(any(windows, test))]
+        [b'/', drive, b':', b'/', ..] if drive.is_ascii_alphabetic() => {
+            path.strip_prefix('/').unwrap().to_owned()
+        }
+        _ => path,
+    };
+
+    Ok(path)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::InitializeParams;
+    use super::{parse_file_uri as p, InitializeParams};
+
+    #[test]
+    fn parsing_file_uris() {
+        assert_eq!(p("file:///home/user/proj").unwrap(), "/home/user/proj");
+        assert_eq!(p("file:///c:/dev/proj").unwrap(), "c:/dev/proj");
+        assert_eq!(p("file:///proj").unwrap(), "/proj");
+        assert_eq!(p("file:///d:/proj").unwrap(), "d:/proj");
+        assert_eq!(p("file:///").unwrap(), "/");
+        assert_eq!(p("file:///e:/").unwrap(), "e:/");
+    }
 
     #[test]
     #[allow(non_snake_case)]
