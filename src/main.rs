@@ -54,6 +54,12 @@ enum Cmd {
     /// For rust-analyzer send the `rust-analyzer/reloadWorkspace` extension request.
     /// Do nothing for other language servers.
     Reload {},
+
+    /// Synchronize file states
+    ///
+    /// Read all files currently open by some editor from disk and generate a
+    /// `textDocument/didChange` event with the full content for each of them.
+    Sync {},
 }
 
 #[tokio::main(flavor = "current_thread")]
@@ -80,6 +86,7 @@ async fn main() -> Result<()> {
         Some(Cmd::Status { json, verbose }) => ext::status(&config, json, verbose).await,
         Some(Cmd::Config {}) => ext::config(&config),
         Some(Cmd::Reload {}) => ext::reload(&config).await,
+        Some(Cmd::Sync {}) => ext::sync(&config).await,
         None => {
             let server_path = env::var("LSPMUX_SERVER").unwrap_or_else(|_| "rust-analyzer".into());
             proxy::run(&config, server_path, vec![]).await

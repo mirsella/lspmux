@@ -209,9 +209,75 @@ pub struct TextDocumentIdentifier {
     pub uri: String,
 }
 
+/// Params for `textDocument/didChange` notification
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct DidChangeTextDocumentParams {
+    pub text_document: VersionedTextDocumentIdentifier,
+    pub content_changes: Vec<TextDocumentContentChangeEvent>,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct VersionedTextDocumentIdentifier {
+    pub uri: String,
+    pub version: Option<u64>,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct TextDocumentContentChangeEvent {
+    pub text: String,
+}
+
+// Parse a file path as String out of a LSP `URI` type.
+pub fn parse_root_uri(root_uri: &str) -> anyhow::Result<String> {
+    use percent_encoding::percent_decode_str;
+    use uriparse::URI;
+
+    let (scheme, _, mut path, _, _) = URI::try_from(root_uri)
+        .map_err(|e| anyhow::anyhow!("failed to parse URI: {}", e))?
+        .into_parts();
+
+    if scheme != uriparse::Scheme::File {
+        anyhow::bail!("only `file://` URIs are supported");
+    }
+
+    path.normalize(false);
+
+    let root = percent_decode_str(&path.to_string())
+        .decode_utf8()
+        .map_err(|e| anyhow::anyhow!("decoded URI was not valid utf-8: {}", e))?
+        .to_string();
+
+    // On windows the drive letter `C:/` gets interpreted as the first
+    // segment of an absolute path which results in an extra `/` at the
+    // beginning of the string representation which needs to be removed.
+    let root = match root.as_bytes() {
+        #[cfg(any(windows, test))]
+        [b'/', drive, b':', b'/', ..] if drive.is_ascii_alphabetic() => {
+            root.strip_prefix('/').unwrap().to_owned()
+        }
+        _ => root,
+    };
+
+    Ok(root)
+}
+
 #[cfg(test)]
 mod tests {
+    use super::parse_root_uri as p;
     use super::InitializeParams;
+
+    #[test]
+    fn parsing_root_uris() {
+        assert_eq!(p("file:///home/user/proj").unwrap(), "/home/user/proj");
+        assert_eq!(p("file:///c:/dev/proj").unwrap(), "c:/dev/proj");
+        assert_eq!(p("file:///proj").unwrap(), "/proj");
+        assert_eq!(p("file:///d:/proj").unwrap(), "d:/proj");
+        assert_eq!(p("file:///").unwrap(), "/");
+        assert_eq!(p("file:///e:/").unwrap(), "e:/");
+    }
 
     #[test]
     #[allow(non_snake_case)]

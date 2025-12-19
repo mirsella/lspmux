@@ -326,6 +326,59 @@ impl Instance {
             registered_dyn_capabilities,
         }
     }
+
+    /// Read all files currently open by some editor from disk and generate a
+    /// `textDocument/didChange` event with the full content for each of them.
+    pub async fn sync_files(&self) -> Result<()> {
+        let unique_files = {
+            let clients = self.clients.lock().await;
+            let mut unique_files = HashSet::new();
+            for client in clients.values() {
+                for file in &client.files {
+                    unique_files.insert(file.clone());
+                }
+            }
+            unique_files
+        };
+
+        for uri in unique_files {
+            let path = match lsp::parse_root_uri(&uri) {
+                Ok(path) => path,
+                Err(err) => {
+                    warn!(?uri, ?err, "failed to parse URI");
+                    continue;
+                }
+            };
+
+            let text = match tokio::fs::read_to_string(&path).await {
+                Ok(text) => text,
+                Err(err) => {
+                    warn!(?path, ?err, "failed to read file from disk");
+                    continue;
+                }
+            };
+
+            let params = lsp::DidChangeTextDocumentParams {
+                text_document: lsp::VersionedTextDocumentIdentifier {
+                    uri,
+                    version: None,
+                },
+                content_changes: vec![lsp::TextDocumentContentChangeEvent { text }],
+            };
+
+            let notif = Notification {
+                jsonrpc: Version,
+                method: "textDocument/didChange".into(),
+                params: serde_json::to_value(params).unwrap(),
+            };
+
+            if let Err(err) = self.send_message(notif.into()).await {
+                warn!(?err, "failed to send sync notification to server");
+            }
+        }
+
+        Ok(())
+    }
 }
 
 pub struct InstanceMap(HashMap<InstanceKey, Arc<Instance>>);
@@ -343,12 +396,12 @@ impl InstanceMap {
 
     /// Finds an instance with the longest path such as
     /// `cwd.starts_with(workspace_root)` is true
-    pub fn get_by_cwd(&self, cwd: &str) -> Option<&Instance> {
+    pub fn get_by_cwd(&self, cwd: &str) -> Option<Arc<Instance>> {
         self.0
             .iter()
             .filter(|(key, _)| Path::new(cwd).starts_with(&key.workspace_root))
             .max_by_key(|(key, _)| key.workspace_root.len())
-            .map(|(_, inst)| inst.deref())
+            .map(|(_, inst)| inst.clone())
     }
 
     pub async fn get_status(&self) -> ext::StatusResponse {

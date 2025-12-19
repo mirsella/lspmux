@@ -151,6 +151,16 @@ pub enum Request {
         /// `cwd.starts_with(workspace_root)` is true
         cwd: String,
     },
+
+    /// Synchronize file states
+    ///
+    /// Read all files currently open by some editor from disk and generate a
+    /// `textDocument/didChange` event with the full content for each of them.
+    Sync {
+        /// Selects instance with the longest path where
+        /// `cwd.starts_with(workspace_root)` is true
+        cwd: String,
+    },
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]

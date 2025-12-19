@@ -3,14 +3,13 @@ use std::io::ErrorKind;
 use std::sync::Arc;
 
 use anyhow::{bail, ensure, Context, Result};
-use percent_encoding::percent_decode_str;
 use serde_json::Value;
 use tokio::io::BufReader;
+
 use tokio::sync::mpsc::error::SendError;
 use tokio::sync::{mpsc, Mutex};
 use tokio::task;
 use tracing::{debug, error, info, warn, Instrument};
-use uriparse::URI;
 
 use crate::instance::{self, Instance, InstanceKey, InstanceMap};
 use crate::lsp::ext::{self, LspMuxOptions, Tag};
@@ -18,7 +17,7 @@ use crate::lsp::jsonrpc::{
     self, Message, Request, RequestId, ResponseError, ResponseSuccess, Version,
 };
 use crate::lsp::transport::{LspReader, LspWriter};
-use crate::lsp::InitializeParams;
+use crate::lsp::{self, InitializeParams};
 use crate::socketwrapper::{OwnedReadHalf, OwnedWriteHalf, Stream};
 
 /// Read first client message and dispatch lsp mux commands
@@ -81,6 +80,7 @@ pub async fn process(
         }
         ext::Request::Status {} => status(instance_map, writer).await,
         ext::Request::Reload { cwd } => reload(cwd, instance_map, writer).await,
+        ext::Request::Sync { cwd } => sync(cwd, instance_map, writer).await,
     }
 }
 
@@ -126,7 +126,8 @@ async fn reload(
     instance_map: Arc<Mutex<InstanceMap>>,
     mut writer: LspWriter<OwnedWriteHalf>,
 ) -> Result<()> {
-    if let Some(instance) = instance_map.lock().await.get_by_cwd(&cwd) {
+    let instance = instance_map.lock().await.get_by_cwd(&cwd);
+    if let Some(instance) = instance {
         instance
             .send_message(Message::Request(Request {
                 jsonrpc: Version,
@@ -137,6 +138,40 @@ async fn reload(
             .await
             .ok()
             .context("instance closed")?;
+
+        writer
+            .write_message(&Message::ResponseSuccess(ResponseSuccess::null(
+                RequestId::Number(0),
+            )))
+            .await
+            .context("writing response")?;
+    } else {
+        writer
+            .write_message(&Message::ResponseError(ResponseError {
+                jsonrpc: Version,
+                error: jsonrpc::Error {
+                    code: 0,
+                    message: "no instance found".into(),
+                    data: None,
+                },
+                id: RequestId::Number(0),
+            }))
+            .await
+            .context("writing response")?;
+        debug!(?cwd, "no instance found for path");
+    }
+
+    Ok(())
+}
+
+async fn sync(
+    cwd: String,
+    instance_map: Arc<Mutex<InstanceMap>>,
+    mut writer: LspWriter<OwnedWriteHalf>,
+) -> Result<()> {
+    let instance = instance_map.lock().await.get_by_cwd(&cwd);
+    if let Some(instance) = instance {
+        instance.sync_files().await.context("sync files")?;
 
         writer
             .write_message(&Message::ResponseSuccess(ResponseSuccess::null(
@@ -230,49 +265,6 @@ async fn connect(
     Ok(())
 }
 
-// Parse a file path as String out of a LSP `URI` type.
-fn parse_root_uri(root_uri: &str) -> Result<String> {
-    let (scheme, _, mut path, _, _) = URI::try_from(root_uri)
-        .context("failed to parse URI")?
-        .into_parts();
-
-    if scheme != uriparse::Scheme::File {
-        bail!("only `file://` URIs are supported");
-    }
-
-    path.normalize(false);
-
-    let root = percent_decode_str(&path.to_string())
-        .decode_utf8()
-        .context("decoded URI was not valid utf-8")?
-        .to_string();
-
-    // On windows the drive letter `C:/` gets interpreted as the first
-    // segment of an absolute path which results in an extra `/` at the
-    // beginning of the string representation which needs to be removed.
-    let root = match root.as_bytes() {
-        #[cfg(any(windows, test))]
-        [b'/', drive, b':', b'/', ..] if drive.is_ascii_alphabetic() => {
-            root.strip_prefix('/').unwrap().to_owned()
-        }
-        _ => root,
-    };
-
-    Ok(root)
-}
-
-#[cfg(test)]
-#[test]
-fn parsing_root_uris() {
-    use parse_root_uri as p;
-    assert_eq!(p("file:///home/user/proj").unwrap(), "/home/user/proj");
-    assert_eq!(p("file:///c:/dev/proj").unwrap(), "c:/dev/proj");
-    assert_eq!(p("file:///proj").unwrap(), "/proj");
-    assert_eq!(p("file:///d:/proj").unwrap(), "d:/proj");
-    assert_eq!(p("file:///").unwrap(), "/");
-    assert_eq!(p("file:///e:/").unwrap(), "e:/");
-}
-
 fn select_workspace_root<'a>(
     init_params: &'a InitializeParams,
     proxy_cwd: Option<&'a str>,
@@ -289,7 +281,7 @@ fn select_workspace_root<'a>(
     }
 
     if workspace_folders.len() == 1 {
-        return parse_root_uri(&workspace_folders[0].uri)
+        return lsp::parse_root_uri(&workspace_folders[0].uri)
             .context("parse initParams.workspaceFolders[0].uri");
     }
 
@@ -297,7 +289,7 @@ fn select_workspace_root<'a>(
 
     // Using the deprecated LSP fields `rootPath` or `rootUri` as fallback
     if let Some(root_uri) = &init_params.root_uri {
-        return parse_root_uri(root_uri).context("parse initParams.rootUri");
+        return lsp::parse_root_uri(root_uri).context("parse initParams.rootUri");
     }
     if let Some(root_path) = &init_params.root_path {
         return Ok(root_path.to_owned());
