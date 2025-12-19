@@ -54,6 +54,17 @@ enum Cmd {
     /// For rust-analyzer send the `rust-analyzer/reloadWorkspace` extension request.
     /// Do nothing for other language servers.
     Reload {},
+
+    /// Reload server file state from disk
+    ///
+    /// Make sure to save in all your open editors before running this command,
+    /// or the state will immediately desync again.
+    ///
+    /// Useful when multiple clients have opened the same file and have sent
+    /// conflicting edits to the server resulting in an inconstistent file
+    /// state, this often manifests as persistent syntax errors thrown by the
+    /// server.
+    Sync {},
 }
 
 #[tokio::main(flavor = "current_thread")]
@@ -80,6 +91,7 @@ async fn main() -> Result<()> {
         Some(Cmd::Status { json, verbose }) => ext::status(&config, json, verbose).await,
         Some(Cmd::Config {}) => ext::config(&config),
         Some(Cmd::Reload {}) => ext::reload(&config).await,
+        Some(Cmd::Sync {}) => ext::sync(&config).await,
         None => {
             let server_path = env::var("LSPMUX_SERVER").unwrap_or_else(|_| "rust-analyzer".into());
             proxy::run(&config, server_path, vec![]).await

@@ -210,6 +210,27 @@ pub struct TextDocumentIdentifier {
     pub uri: String,
 }
 
+/// Params for `textDocument/didChange` notification
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct DidChangeTextDocumentParams {
+    pub text_document: VersionedTextDocumentIdentifier,
+    pub content_changes: Vec<TextDocumentContentChangeEvent>,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct VersionedTextDocumentIdentifier {
+    pub uri: String,
+    pub version: Option<u64>,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct TextDocumentContentChangeEvent {
+    pub text: String,
+}
+
 /// Parse LSP `URI` type as an absolute file path.
 pub fn parse_file_uri(root_uri: &str) -> Result<String> {
     use percent_encoding::percent_decode_str;

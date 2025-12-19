@@ -130,3 +130,13 @@ pub async fn reload(config: &Config) -> Result<()> {
     ext_request::<IgnoredAny>(config, ext::Request::Reload { cwd }).await?;
     Ok(())
 }
+
+pub async fn sync(config: &Config) -> Result<()> {
+    let cwd = env::current_dir()
+        .context("unable to get current_dir")?
+        .to_str()
+        .context("current_dir is not valid utf-8")?
+        .to_owned();
+    ext_request::<IgnoredAny>(config, ext::Request::Sync { cwd }).await?;
+    Ok(())
+}
