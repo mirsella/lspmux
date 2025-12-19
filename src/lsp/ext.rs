@@ -151,6 +151,17 @@ pub enum Request {
         /// `cwd.starts_with(workspace_root)` is true
         cwd: String,
     },
+
+    /// Reload server file state from disk
+    ///
+    /// Read all files currently open by any client from disk and generate a
+    /// `textDocument/didChange` notification with the full content for each
+    /// of them.
+    Sync {
+        /// Selects instance with the longest path where
+        /// `cwd.starts_with(workspace_root)` is true
+        cwd: String,
+    },
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
