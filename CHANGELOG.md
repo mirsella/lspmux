@@ -6,17 +6,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [Unreleased]
+
+### Added
+- `sync` subcommand to allow reload the server's file state from disk when it gets desynced by conflicting diffs from multiple clients
+
+### Fixed
+- support `InitializeParams.workspaceFolders` to be null properly, fixing issues with neovim
+
+### Changed
+- reduced the number of dependencies and dependency features to improve compile times slightly
+- make `status` subcommand output less verbose by default
+
+
 ## [v0.3.0] - 2025-10-12
 
 ### Changed
-
 - renamed project from `ra-multiplex` to `lspmux` to better reflect that it supports more language servers than just rust-analyzer
 
 
 ## [v0.2.6] - 2025-10-12
 
 ### Changed
-
 - changed license from MIT to EUPL-1.2
 - migrated repository to Codeberg <https://codeberg.org/p2502/lspmux>
 
@@ -105,7 +116,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 - replace `listen` and `port` configuration options with separate `listen` and `connect` options for server and client/proxy
-
 
 
 ## [v0.1.4] - 2022-02-01
