@@ -4,7 +4,7 @@
 [crates.io]: https://crates.io/crates/lspmux
 
 Multiplexer for [LSP], allows multiple LSP clients (editor windows) to share a
-single langauge server instance per workspace.
+single language server instance per workspace.
 
 [LSP]: https://microsoft.github.io/language-server-protocol
 
