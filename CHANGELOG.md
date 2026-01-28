@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - support `InitializeParams.workspaceFolders` to be null properly, fixing issues with neovim
+- handle workspace root path comparison correctly on case-insensitive file systems
 
 ### Changed
 - reduced the number of dependencies and dependency features to improve compile times slightly

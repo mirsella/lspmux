@@ -10,7 +10,7 @@ use tokio::sync::{mpsc, Mutex};
 use tokio::task;
 use tracing::{debug, error, info, warn, Instrument};
 
-use crate::instance::{self, Instance, InstanceKey, InstanceMap};
+use crate::instance::{self, Instance, InstanceKey, InstanceMap, WorkspaceRoot};
 use crate::lsp::ext::{self, LspMuxOptions, Tag};
 use crate::lsp::jsonrpc::{
     self, Message, Request, RequestId, ResponseError, ResponseSuccess, Version,
@@ -216,6 +216,10 @@ async fn connect(
     // Select the workspace root directory.
     let workspace_root = select_workspace_root(&init_params, cwd.as_deref())
         .context("could not get any workspace_root")?;
+    let workspace_root = task::spawn_blocking(move || WorkspaceRoot::from_path(workspace_root))
+        .await
+        .expect("blocking task panicked")
+        .context("get workspace_root metadata")?;
 
     // Get an language server instance for this client.
     let key = InstanceKey {

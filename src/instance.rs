@@ -1,6 +1,6 @@
 use std::collections::hash_map::Entry;
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::env;
+use std::hash::{Hash, Hasher};
 use std::io::ErrorKind;
 use std::ops::Deref;
 use std::path::Path;
@@ -8,6 +8,7 @@ use std::process::Stdio;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant};
+use std::{env, fmt};
 
 use anyhow::{bail, Context, Result};
 use serde_json::{json, Value};
@@ -33,7 +34,76 @@ pub struct InstanceKey {
     pub server: String,
     pub args: Vec<String>,
     pub env: BTreeMap<String, String>,
-    pub workspace_root: String,
+    pub workspace_root: WorkspaceRoot,
+}
+
+/// Represents workspace root as a unique directory
+///
+/// On some file systems or operating systems file/directory equality is more
+/// complicated than equality on paths. Windows is by default case-insensitive,
+/// and MacOS's APFS compares after unicode normalization. The only reliable way
+/// to ensure two paths are the same is to compare their inode and dev numbers.
+#[derive(Clone)]
+pub struct WorkspaceRoot {
+    path: String,
+    device_id: u64,
+    file_id: u64,
+}
+
+impl WorkspaceRoot {
+    #[cfg(any(target_os = "redox", unix))]
+    pub fn from_path(path: String) -> Result<Self> {
+        use std::os::unix::fs::MetadataExt as _;
+
+        let metadata = Path::new(&path)
+            .metadata()
+            .with_context(|| format!("error getting metadata for path {path:?}"))?;
+
+        Ok(Self {
+            path,
+            device_id: metadata.dev(),
+            file_id: metadata.ino(),
+        })
+    }
+
+    #[cfg(windows)]
+    pub fn from_path(path: String) -> Result<Self> {
+        use winapi_util::{file, Handle};
+
+        let handle =
+            Handle::from_path_any(&path).with_context(|| format!("error opening path {path:?}"))?;
+        let information = file::information(&handle)
+            .with_context(|| format!("error getting file information for path {path:?}"))?;
+
+        Ok(Self {
+            path,
+            device_id: information.volume_serial_number(),
+            file_id: information.file_index(),
+        })
+    }
+}
+
+impl PartialEq for WorkspaceRoot {
+    fn eq(&self, other: &Self) -> bool {
+        // Skip `self.path`
+        self.device_id == other.device_id && self.file_id == other.file_id
+    }
+}
+
+impl Eq for WorkspaceRoot {}
+
+impl Hash for WorkspaceRoot {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        // Skip `self.path`
+        self.device_id.hash(state);
+        self.file_id.hash(state);
+    }
+}
+
+impl fmt::Debug for WorkspaceRoot {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        <String as fmt::Debug>::fmt(&self.path, f)
+    }
 }
 
 /// Language server instance
@@ -320,7 +390,11 @@ impl Instance {
             server: self.key.server.clone(),
             args: self.key.args.clone(),
             env: self.key.env.clone(),
-            workspace_root: self.key.workspace_root.clone(),
+            workspace_root: ext::WorkspaceRoot {
+                path: self.key.workspace_root.path.clone(),
+                device_id: self.key.workspace_root.device_id,
+                file_id: self.key.workspace_root.file_id,
+            },
             idle_for: self.idle(),
             clients,
             registered_dyn_capabilities,
@@ -394,8 +468,8 @@ impl InstanceMap {
     pub fn get_by_cwd(&self, cwd: &str) -> Option<&Instance> {
         self.0
             .iter()
-            .filter(|(key, _)| Path::new(cwd).starts_with(&key.workspace_root))
-            .max_by_key(|(key, _)| key.workspace_root.len())
+            .filter(|(key, _)| Path::new(cwd).starts_with(&key.workspace_root.path))
+            .max_by_key(|(key, _)| key.workspace_root.path.len())
             .map(|(_, inst)| inst.deref())
     }
 
@@ -479,7 +553,7 @@ async fn spawn(
     let mut child = Command::new(&key.server)
         .args(&key.args)
         .envs(&key.env)
-        .current_dir(&key.workspace_root)
+        .current_dir(&key.workspace_root.path)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
