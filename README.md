@@ -67,6 +67,7 @@ Commands:
   status  Print server status
   config  Print server configuration
   reload  Reload workspace
+  sync    Reload server file state from disk
   help    Print this message or the help of the given subcommand(s)
 
 Options:
