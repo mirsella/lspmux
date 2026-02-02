@@ -52,6 +52,10 @@ pub mod transport;
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct InitializeParams {
+    /// > The process Id of the parent process that started the server. Is
+    /// > null if the process has not been started by another process. If the
+    /// > parent process is not alive then the server should exit (see exit
+    /// > notification) its process.
     pub process_id: Option<u64>,
 
     #[serde(skip_serializing_if = "Option::is_none")]

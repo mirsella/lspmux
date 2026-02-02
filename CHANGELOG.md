@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - support `InitializeParams.workspaceFolders` to be null properly, fixing issues with neovim
 - handle workspace root path comparison correctly on case-insensitive file systems
 - avoid throwing an error when receiving a pre-initialize notification from server (for example progress notification)
+- replace `InitializeParams.processId` with lspmux server process ID, preventing langauge servers, which actually follow the spec and monitor the client PID, from exitting when the first client exits
 
 ### Changed
 - reduced the number of dependencies and dependency features to improve compile times slightly

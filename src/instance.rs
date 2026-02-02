@@ -544,7 +544,7 @@ pub async fn get_or_spawn(
 #[instrument(name = "instance", fields(pid = field::Empty), skip_all, parent = None)]
 async fn spawn(
     key: InstanceKey,
-    init_req_params: lsp::InitializeParams,
+    mut init_req_params: lsp::InitializeParams,
     // Caller `get_or_spawn` is holding a lock to the map, we must not try to
     // lock it within this function to not cause deadlock, only spawned tasks
     // are allowed to lock it again.
@@ -591,6 +591,12 @@ async fn spawn(
 
     let stdin = child.stdin.take().unwrap();
     let mut writer = LspWriter::new(stdin, "server");
+
+    // Some LSP servers monitor client PIDs and exit if none remain (as
+    // documented in the LSP spec). We need to replace the client PID in the
+    // initialization request with lspmux server PID to prevent the server from
+    // exitting when the original client exits.
+    init_req_params.process_id = Some(std::process::id() as u64);
 
     let init_result = initialize_handshake(init_req_params, &mut reader, &mut writer)
         .await
