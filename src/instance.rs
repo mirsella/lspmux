@@ -520,6 +520,7 @@ pub async fn get_or_spawn(
     map: Arc<Mutex<InstanceMap>>,
     key: InstanceKey,
     init_req_params: lsp::InitializeParams,
+    client: Client,
 ) -> Result<Arc<Instance>> {
     // We have locked a clone of an Arc of the map, we can assume noone else
     // tries to spawn the same instance again. But we have to make sure `spawn`
@@ -529,10 +530,11 @@ pub async fn get_or_spawn(
     match map.clone().lock().await.0.entry(key.clone()) {
         Entry::Occupied(e) => {
             info!("reusing language server instance");
+            e.get().add_client(client).await;
             Ok(e.get().clone())
         }
         Entry::Vacant(e) => {
-            let instance = spawn(key, init_req_params, map)
+            let instance = spawn(key, init_req_params, map, client)
                 .await
                 .context("spawning instance")?;
             e.insert(instance.clone());
@@ -549,6 +551,7 @@ async fn spawn(
     // lock it within this function to not cause deadlock, only spawned tasks
     // are allowed to lock it again.
     map: Arc<Mutex<InstanceMap>>,
+    client: Client,
 ) -> Result<Arc<Instance>> {
     let mut child = Command::new(&key.server)
         .args(&key.args)
@@ -606,12 +609,19 @@ async fn spawn(
 
     let (message_writer, rx) = mpsc::channel(64);
 
+    let mut clients = HashMap::new();
+    let client = ClientData {
+        client,
+        files: HashSet::new(),
+    };
+    clients.insert(client.id(), client);
+
     let instance = Arc::new(Instance {
         key,
         pid,
         init_result,
         server: message_writer,
-        clients: Mutex::default(),
+        clients: Mutex::new(clients),
         dynamic_capabilities: Mutex::default(),
         close: Notify::new(),
         last_used: AtomicI64::new(elapsed_seconds()),

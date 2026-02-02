@@ -228,7 +228,8 @@ async fn connect(
         env,
         workspace_root,
     };
-    let instance = instance::get_or_spawn(instance_map, key, init_params).await?;
+    let (client, client_rx) = Client::new(client_id);
+    let instance = instance::get_or_spawn(instance_map, key, init_params, client.clone()).await?;
 
     // Respond to client's `initialize` request using a response result from
     // the first time this server instance was initialized, it might not be
@@ -260,10 +261,7 @@ async fn connect(
     }
     info!("initialized client");
 
-    let (client, client_rx) = Client::new(client_id);
     task::spawn(input_task(client_rx, writer).in_current_span());
-    instance.add_client(client.clone()).await;
-
     task::spawn(output_task(reader, client, instance).in_current_span());
 
     Ok(())
