@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - handle workspace root path comparison correctly on case-insensitive file systems
 - avoid throwing an error when receiving a pre-initialize notification from server (for example progress notification)
 - replace `InitializeParams.processId` with lspmux server process ID, preventing langauge servers, which actually follow the spec and monitor the client PID, from exitting when the first client exits
+- avoid dropping early server requests, like `workspace/configuration`, fixes hangup when starting deno
 
 ### Changed
 - reduced the number of dependencies and dependency features to improve compile times slightly
