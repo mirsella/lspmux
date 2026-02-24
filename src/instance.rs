@@ -197,6 +197,14 @@ impl Instance {
     ///
     /// It replays all registered dynamic capabilities to it.
     pub async fn add_client(&self, client: Client) {
+        // NOTE: this method holds both `clients` and `dynamic_capabilities`
+        // locks across a `send_message` await. This is acceptable because the
+        // client channel is freshly created and no receiver task has been
+        // spawned yet, so the send completes immediately without yielding.
+        //
+        // If `add_client` is ever called with an active client whose channel
+        // might be full, this must be restructured to snapshot and release the
+        // locks first.
         let mut clients = self.clients.lock().await;
         let dyn_capabilities = self.dynamic_capabilities.lock().await;
 
@@ -225,6 +233,33 @@ impl Instance {
         if clients.insert(client.id(), client).is_some() {
             unreachable!("BUG: added two clients with the same ID");
         }
+    }
+
+    /// Get a single client.
+    ///
+    /// This returns owned data so the lock can be acquired and dropped
+    /// immediately.
+    pub async fn get_client(&self, id: usize) -> Option<Client> {
+        let clients = self.clients.lock().await;
+        clients.get(&id).map(|cd| cd.client.clone())
+    }
+
+    /// Return a snapshot of clients.
+    ///
+    /// This returns owned data so the lock can be acquired and dropped
+    /// immediately.
+    pub async fn clients(&self) -> Vec<Client> {
+        let clients = self.clients.lock().await;
+        clients.values().map(|cd| cd.client.clone()).collect()
+    }
+
+    /// Return one arbitrary client.
+    ///
+    /// This returns owned data so the lock can be acquired and dropped
+    /// immediately.
+    pub async fn one_client(&self) -> Option<Client> {
+        let clients = self.clients.lock().await;
+        clients.values().next().map(|cd| cd.client.clone())
     }
 
     /// Send cleanup messages and remove remove client for client map
@@ -368,7 +403,7 @@ impl Instance {
         Ok(())
     }
 
-    async fn get_status(&self) -> ext::Instance {
+    pub async fn get_status(&self) -> ext::Instance {
         let clients = self
             .clients
             .lock()
@@ -464,21 +499,22 @@ impl InstanceMap {
     }
 
     /// Finds an instance with the longest path such as
-    /// `cwd.starts_with(workspace_root)` is true
-    pub fn get_by_cwd(&self, cwd: &str) -> Option<&Instance> {
+    /// `cwd.starts_with(workspace_root)` is true.
+    ///
+    /// This returns owned data to allow callers to drop the lock immediately.
+    pub fn get_by_cwd(&self, cwd: &str) -> Option<Arc<Instance>> {
         self.0
             .iter()
             .filter(|(key, _)| Path::new(cwd).starts_with(&key.workspace_root.path))
             .max_by_key(|(key, _)| key.workspace_root.path.len())
-            .map(|(_, inst)| inst.deref())
+            .map(|(_, inst)| inst.clone())
     }
 
-    pub async fn get_status(&self) -> ext::StatusResponse {
-        let mut instances = Vec::with_capacity(self.0.len());
-        for instance in self.0.values() {
-            instances.push(instance.get_status().await);
-        }
-        ext::StatusResponse { instances }
+    /// Return a snapshot of instances.
+    ///
+    /// This returns owned data to allow callers to drop the lock immediately.
+    pub fn instances(&self) -> Vec<Arc<Instance>> {
+        self.0.values().cloned().collect()
     }
 }
 
@@ -493,16 +529,21 @@ async fn gc_task(
     loop {
         interval.tick().await;
 
-        for (key, instance) in &instance_map.lock().await.0 {
+        let instances = instance_map.lock().await.instances();
+        for instance in &instances {
+            // The instance might have been removed from the map since we took
+            // the snapshot. If so, wait_task has already exited and
+            // notify_one below is a no-op. Otherwise, wait_task will receive
+            // the notification and kill the child.
             let clients = instance.clients.lock().await;
 
             let idle = instance.idle();
-            debug!(path = ?key.workspace_root, idle, clients = clients.len(), "check instance");
+            debug!(path = ?instance.key.workspace_root, idle, clients = clients.len(), "check instance");
 
             if let Some(instance_timeout) = instance_timeout {
                 // Close timed out instance
                 if idle > i64::from(instance_timeout) && clients.is_empty() {
-                    info!(pid = instance.pid, path = ?key.workspace_root, idle, "instance timed out");
+                    info!(pid = instance.pid, path = ?instance.key.workspace_root, idle, "instance timed out");
                     instance.close.notify_one();
                 }
             }
@@ -816,8 +857,10 @@ async fn stdout_task(instance: Arc<Instance>, mut reader: LspReader<BufReader<Ch
             }
         };
 
-        // Lock _after_ we have a message to send, then send and immediately release the lock
-        let clients = instance.clients.lock().await;
+        // Each match arm holds a lock for as little as possible (this is
+        // encapsulated within `get_client`, etc). The lock protocol prevents a
+        // slow client from holding the lock and blocking all other clients and
+        // lock-dependent operations.
         match message {
             Message::ResponseSuccess(mut res) => {
                 // Forward successful response to the right client based on the
@@ -825,7 +868,7 @@ async fn stdout_task(instance: Arc<Instance>, mut reader: LspReader<BufReader<Ch
                 match res.id.untag() {
                     (Some(Tag::ClientId(client_id)), id) => {
                         res.id = id;
-                        if let Some(client) = clients.get(&client_id) {
+                        if let Some(client) = instance.get_client(client_id).await {
                             let _ = client.send_message(res.into()).await;
                         } else {
                             debug!(?client_id, "no matching client");
@@ -847,7 +890,7 @@ async fn stdout_task(instance: Arc<Instance>, mut reader: LspReader<BufReader<Ch
                     (Some(Tag::ClientId(client_id)), id) => {
                         warn!(?res, "server responded with error");
                         res.id = id;
-                        if let Some(client) = clients.get(&client_id) {
+                        if let Some(client) = instance.get_client(client_id).await {
                             let _ = client.send_message(res.into()).await;
                         } else {
                             debug!(?client_id, "no matching client");
@@ -882,7 +925,7 @@ async fn stdout_task(instance: Arc<Instance>, mut reader: LspReader<BufReader<Ch
                 let id = req.id;
                 req.id = id.tag(Tag::Drop);
 
-                for client in clients.values() {
+                for client in instance.clients().await {
                     let _ = client.send_message(req.clone().into()).await;
                 }
 
@@ -898,7 +941,7 @@ async fn stdout_task(instance: Arc<Instance>, mut reader: LspReader<BufReader<Ch
 
                 req.id = req.id.tag(Tag::Forward);
 
-                if let Some(client) = clients.values().next() {
+                if let Some(client) = instance.one_client().await {
                     let _ = client.send_message(req.into()).await;
                 } else {
                     // If there is no client connected at this moment we'll
@@ -916,14 +959,16 @@ async fn stdout_task(instance: Arc<Instance>, mut reader: LspReader<BufReader<Ch
                 let id = req.id;
                 req.id = id.tag(Tag::Drop);
 
-                for client in clients.values() {
-                    let _ = client.send_message(req.clone().into()).await;
+                // Cache before broadcasting so that a client connecting
+                // between the cache update and the broadcast will see
+                // the capability via add_client's replay. The worst case
+                // is a duplicate registerCapability, which is benign.
+                if let Err(err) = instance.register_capabilities(req.params.clone()).await {
+                    warn!(?err, "error registering capabilities");
                 }
 
-                // We need to cache the dynamic capabilities registrations for
-                // any client that might come later.
-                if let Err(err) = instance.register_capabilities(req.params).await {
-                    warn!(?err, "error registering capabilities");
+                for client in instance.clients().await {
+                    let _ = client.send_message(req.clone().into()).await;
                 }
 
                 let _ = instance
@@ -941,14 +986,15 @@ async fn stdout_task(instance: Arc<Instance>, mut reader: LspReader<BufReader<Ch
                 let id = req.id;
                 req.id = id.tag(Tag::Drop);
 
-                for client in clients.values() {
-                    let _ = client.send_message(req.clone().into()).await;
+                // Uncache before broadcasting so that a client connecting
+                // between the cache update and the broadcast won't receive
+                // the stale capability via add_client's replay.
+                if let Err(err) = instance.unregister_capabilities(req.params.clone()).await {
+                    warn!(?err, "error unregistering capabilities");
                 }
 
-                // We need to remove this registration from the cache so we
-                // don't announce it to new clients anymore.
-                if let Err(err) = instance.unregister_capabilities(req.params).await {
-                    warn!(?err, "error unregistering capabilities");
+                for client in instance.clients().await {
+                    let _ = client.send_message(req.clone().into()).await;
                 }
 
                 let _ = instance
@@ -966,7 +1012,7 @@ async fn stdout_task(instance: Arc<Instance>, mut reader: LspReader<BufReader<Ch
             Message::Notification(notif) => {
                 // Server notifications don't expect a response. We can forward
                 // them to all clients.
-                for client in clients.values() {
+                for client in instance.clients().await {
                     let _ = client.send_message(notif.clone().into()).await;
                 }
             }

@@ -109,7 +109,16 @@ async fn status(
     instance_map: Arc<Mutex<InstanceMap>>,
     mut writer: LspWriter<OwnedWriteHalf>,
 ) -> Result<()> {
-    let status = instance_map.lock().await.get_status().await;
+    let instances = instance_map.lock().await.instances();
+
+    let mut status_instances = Vec::with_capacity(instances.len());
+    for instance in &instances {
+        status_instances.push(instance.get_status().await);
+    }
+    let status = ext::StatusResponse {
+        instances: status_instances,
+    };
+
     writer
         .write_message(&Message::ResponseSuccess(ResponseSuccess {
             jsonrpc: Version,
@@ -125,7 +134,13 @@ async fn reload(
     instance_map: Arc<Mutex<InstanceMap>>,
     mut writer: LspWriter<OwnedWriteHalf>,
 ) -> Result<()> {
-    if let Some(instance) = instance_map.lock().await.get_by_cwd(&cwd) {
+    let instance = instance_map.lock().await.get_by_cwd(&cwd);
+    // The instance map lock is acquired above, then dropped immediately.
+    // There's a small TOCTTOU window here between the lock being released
+    // and the instance being closed, but this is benign: if the instance is
+    // replaced with another one in this window, we want to try and send a
+    // message to the old instance, not the new one.
+    if let Some(instance) = instance {
         instance
             .send_message(Message::Request(Request {
                 jsonrpc: Version,
@@ -167,7 +182,13 @@ async fn sync(
     instance_map: Arc<Mutex<InstanceMap>>,
     mut writer: LspWriter<OwnedWriteHalf>,
 ) -> Result<()> {
-    if let Some(instance) = instance_map.lock().await.get_by_cwd(&cwd) {
+    let instance = instance_map.lock().await.get_by_cwd(&cwd);
+    // The instance map lock is acquired above, then dropped immediately.
+    // There's a small TOCTTOU window here between the lock being released
+    // and the instance being closed, but this is benign: if the instance is
+    // replaced with another one in this window, we want to try and send a
+    // message to the old instance, not the new one.
+    if let Some(instance) = instance {
         instance
             .sync_files_from_disk()
             .await
