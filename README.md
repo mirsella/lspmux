@@ -48,7 +48,7 @@ $ cargo install lspmux
 ```
 
 or using one of the package managers which has it
-[available in its repository](https://repology.org/project/ra-multiplex/versions).
+[available in its repository](https://repology.org/project/lspmux/versions).
 
 Run `lspmux` in server mode, make sure that `lspmux` is in your
 `PATH`:
