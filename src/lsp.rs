@@ -28,6 +28,7 @@
 //! - Progress notifications - contains a `token` property which could be used to identify the
 //!   client but the specification also says it has nothing to do with the request IDs
 
+use anyhow::Result;
 use serde::{Deserialize, Deserializer, Serialize};
 
 macro_rules! impl_json_debug {
@@ -51,6 +52,10 @@ pub mod transport;
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct InitializeParams {
+    /// > The process Id of the parent process that started the server. Is
+    /// > null if the process has not been started by another process. If the
+    /// > parent process is not alive then the server should exit (see exit
+    /// > notification) its process.
     pub process_id: Option<u64>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -230,8 +235,8 @@ pub struct TextDocumentContentChangeEvent {
     pub text: String,
 }
 
-// Parse a file path as String out of a LSP `URI` type.
-pub fn parse_root_uri(root_uri: &str) -> anyhow::Result<String> {
+/// Parse LSP `URI` type as an absolute file path.
+pub fn parse_file_uri(root_uri: &str) -> Result<String> {
     use percent_encoding::percent_decode_str;
     use uriparse::URI;
 
@@ -245,7 +250,7 @@ pub fn parse_root_uri(root_uri: &str) -> anyhow::Result<String> {
 
     path.normalize(false);
 
-    let root = percent_decode_str(&path.to_string())
+    let path = percent_decode_str(&path.to_string())
         .decode_utf8()
         .map_err(|e| anyhow::anyhow!("decoded URI was not valid utf-8: {}", e))?
         .to_string();
@@ -253,24 +258,23 @@ pub fn parse_root_uri(root_uri: &str) -> anyhow::Result<String> {
     // On windows the drive letter `C:/` gets interpreted as the first
     // segment of an absolute path which results in an extra `/` at the
     // beginning of the string representation which needs to be removed.
-    let root = match root.as_bytes() {
+    let path = match path.as_bytes() {
         #[cfg(any(windows, test))]
         [b'/', drive, b':', b'/', ..] if drive.is_ascii_alphabetic() => {
-            root.strip_prefix('/').unwrap().to_owned()
+            path.strip_prefix('/').unwrap().to_owned()
         }
-        _ => root,
+        _ => path,
     };
 
-    Ok(root)
+    Ok(path)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::parse_root_uri as p;
-    use super::InitializeParams;
+    use super::{parse_file_uri as p, InitializeParams};
 
     #[test]
-    fn parsing_root_uris() {
+    fn parsing_file_uris() {
         assert_eq!(p("file:///home/user/proj").unwrap(), "/home/user/proj");
         assert_eq!(p("file:///c:/dev/proj").unwrap(), "c:/dev/proj");
         assert_eq!(p("file:///proj").unwrap(), "/proj");

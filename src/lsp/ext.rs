@@ -152,10 +152,11 @@ pub enum Request {
         cwd: String,
     },
 
-    /// Synchronize file states
+    /// Reload server file state from disk
     ///
-    /// Read all files currently open by some editor from disk and generate a
-    /// `textDocument/didChange` event with the full content for each of them.
+    /// Read all files currently open by any client from disk and generate a
+    /// `textDocument/didChange` notification with the full content for each
+    /// of them.
     Sync {
         /// Selects instance with the longest path where
         /// `cwd.starts_with(workspace_root)` is true
@@ -176,10 +177,18 @@ pub struct Instance {
     pub server: String,
     pub args: Vec<String>,
     pub env: BTreeMap<String, String>,
-    pub workspace_root: String,
+    pub workspace_root: WorkspaceRoot,
     pub registered_dyn_capabilities: Vec<String>,
     pub idle_for: i64,
     pub clients: Vec<Client>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceRoot {
+    pub path: String,
+    pub device_id: u64,
+    pub file_id: u64,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]

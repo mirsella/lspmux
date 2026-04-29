@@ -1,13 +1,15 @@
 use std::collections::BTreeSet;
-use std::fs;
 use std::net::{IpAddr, Ipv4Addr};
 #[cfg(target_family = "unix")]
 use std::path::PathBuf;
+use std::{fmt, fs};
 
 use anyhow::{Context, Result};
 use directories::ProjectDirs;
+use glob::{Pattern, PatternError};
 use serde::de::{Error, Unexpected};
-use serde::{Deserialize, Deserializer, Serialize};
+use serde::ser::SerializeSeq;
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 mod default {
     use super::*;
@@ -35,8 +37,11 @@ mod default {
         "info".to_owned()
     }
 
-    pub fn pass_environment() -> BTreeSet<String> {
-        BTreeSet::new()
+    pub fn pass_environment() -> Vec<Filter> {
+        vec![Filter {
+            negative: false,
+            pattern: Pattern::new("*").unwrap(),
+        }]
     }
 }
 
@@ -81,6 +86,41 @@ mod de {
             value => Ok(value),
         }
     }
+
+    pub fn pass_environment<'de, D>(deserializer: D) -> Result<Vec<Filter>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        <BTreeSet<String>>::deserialize(deserializer)?
+            .into_iter()
+            .map(|pat| {
+                let negative = pat.starts_with("!");
+                let pat = pat.strip_prefix("!").unwrap_or(&pat);
+
+                match Pattern::new(&pat) {
+                    Ok(pattern) => Ok(Filter { negative, pattern }),
+                    Err(PatternError { pos, msg }) => Err(Error::custom(format!(
+                        "invalid pattern `{pat}` near {pos}: {msg}"
+                    ))),
+                }
+            })
+            .collect()
+    }
+}
+
+mod ser {
+    use super::*;
+
+    pub fn pass_environment<S>(filters: &Vec<Filter>, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut serializer = serializer.serialize_seq(Some(filters.len()))?;
+        for filter in filters {
+            serializer.serialize_element(&filter.to_string())?;
+        }
+        serializer.end()
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -89,6 +129,23 @@ pub enum Address {
     Tcp(IpAddr, u16),
     #[cfg(target_family = "unix")]
     Unix(PathBuf),
+}
+
+#[derive(Debug)]
+pub struct Filter {
+    pub negative: bool,
+    pub pattern: Pattern,
+}
+
+impl fmt::Display for Filter {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{}{}",
+            if self.negative { "!" } else { "" },
+            self.pattern.as_str(),
+        )
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -112,7 +169,9 @@ pub struct Config {
     pub log_filters: String,
 
     #[serde(default = "default::pass_environment")]
-    pub pass_environment: BTreeSet<String>,
+    #[serde(deserialize_with = "de::pass_environment")]
+    #[serde(serialize_with = "ser::pass_environment")]
+    pub pass_environment: Vec<Filter>,
 }
 
 #[cfg(test)]

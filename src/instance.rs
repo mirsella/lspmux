@@ -1,6 +1,6 @@
 use std::collections::hash_map::Entry;
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::env;
+use std::hash::{Hash, Hasher};
 use std::io::ErrorKind;
 use std::ops::Deref;
 use std::path::Path;
@@ -8,6 +8,7 @@ use std::process::Stdio;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant};
+use std::{env, fmt};
 
 use anyhow::{bail, Context, Result};
 use serde_json::{json, Value};
@@ -33,7 +34,76 @@ pub struct InstanceKey {
     pub server: String,
     pub args: Vec<String>,
     pub env: BTreeMap<String, String>,
-    pub workspace_root: String,
+    pub workspace_root: WorkspaceRoot,
+}
+
+/// Represents workspace root as a unique directory
+///
+/// On some file systems or operating systems file/directory equality is more
+/// complicated than equality on paths. Windows is by default case-insensitive,
+/// and MacOS's APFS compares after unicode normalization. The only reliable way
+/// to ensure two paths are the same is to compare their inode and dev numbers.
+#[derive(Clone)]
+pub struct WorkspaceRoot {
+    path: String,
+    device_id: u64,
+    file_id: u64,
+}
+
+impl WorkspaceRoot {
+    #[cfg(any(target_os = "redox", unix))]
+    pub fn from_path(path: String) -> Result<Self> {
+        use std::os::unix::fs::MetadataExt as _;
+
+        let metadata = Path::new(&path)
+            .metadata()
+            .with_context(|| format!("error getting metadata for path {path:?}"))?;
+
+        Ok(Self {
+            path,
+            device_id: metadata.dev(),
+            file_id: metadata.ino(),
+        })
+    }
+
+    #[cfg(windows)]
+    pub fn from_path(path: String) -> Result<Self> {
+        use winapi_util::{file, Handle};
+
+        let handle =
+            Handle::from_path_any(&path).with_context(|| format!("error opening path {path:?}"))?;
+        let information = file::information(&handle)
+            .with_context(|| format!("error getting file information for path {path:?}"))?;
+
+        Ok(Self {
+            path,
+            device_id: information.volume_serial_number(),
+            file_id: information.file_index(),
+        })
+    }
+}
+
+impl PartialEq for WorkspaceRoot {
+    fn eq(&self, other: &Self) -> bool {
+        // Skip `self.path`
+        self.device_id == other.device_id && self.file_id == other.file_id
+    }
+}
+
+impl Eq for WorkspaceRoot {}
+
+impl Hash for WorkspaceRoot {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        // Skip `self.path`
+        self.device_id.hash(state);
+        self.file_id.hash(state);
+    }
+}
+
+impl fmt::Debug for WorkspaceRoot {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        <String as fmt::Debug>::fmt(&self.path, f)
+    }
 }
 
 /// Language server instance
@@ -127,6 +197,14 @@ impl Instance {
     ///
     /// It replays all registered dynamic capabilities to it.
     pub async fn add_client(&self, client: Client) {
+        // NOTE: this method holds both `clients` and `dynamic_capabilities`
+        // locks across a `send_message` await. This is acceptable because the
+        // client channel is freshly created and no receiver task has been
+        // spawned yet, so the send completes immediately without yielding.
+        //
+        // If `add_client` is ever called with an active client whose channel
+        // might be full, this must be restructured to snapshot and release the
+        // locks first.
         let mut clients = self.clients.lock().await;
         let dyn_capabilities = self.dynamic_capabilities.lock().await;
 
@@ -155,6 +233,33 @@ impl Instance {
         if clients.insert(client.id(), client).is_some() {
             unreachable!("BUG: added two clients with the same ID");
         }
+    }
+
+    /// Get a single client.
+    ///
+    /// This returns owned data so the lock can be acquired and dropped
+    /// immediately.
+    pub async fn get_client(&self, id: usize) -> Option<Client> {
+        let clients = self.clients.lock().await;
+        clients.get(&id).map(|cd| cd.client.clone())
+    }
+
+    /// Return a snapshot of clients.
+    ///
+    /// This returns owned data so the lock can be acquired and dropped
+    /// immediately.
+    pub async fn clients(&self) -> Vec<Client> {
+        let clients = self.clients.lock().await;
+        clients.values().map(|cd| cd.client.clone()).collect()
+    }
+
+    /// Return one arbitrary client.
+    ///
+    /// This returns owned data so the lock can be acquired and dropped
+    /// immediately.
+    pub async fn one_client(&self) -> Option<Client> {
+        let clients = self.clients.lock().await;
+        clients.values().next().map(|cd| cd.client.clone())
     }
 
     /// Send cleanup messages and remove remove client for client map
@@ -298,7 +403,7 @@ impl Instance {
         Ok(())
     }
 
-    async fn get_status(&self) -> ext::Instance {
+    pub async fn get_status(&self) -> ext::Instance {
         let clients = self
             .clients
             .lock()
@@ -320,29 +425,31 @@ impl Instance {
             server: self.key.server.clone(),
             args: self.key.args.clone(),
             env: self.key.env.clone(),
-            workspace_root: self.key.workspace_root.clone(),
+            workspace_root: ext::WorkspaceRoot {
+                path: self.key.workspace_root.path.clone(),
+                device_id: self.key.workspace_root.device_id,
+                file_id: self.key.workspace_root.file_id,
+            },
             idle_for: self.idle(),
             clients,
             registered_dyn_capabilities,
         }
     }
 
-    /// Read all files currently open by some editor from disk and generate a
-    /// `textDocument/didChange` event with the full content for each of them.
-    pub async fn sync_files(&self) -> Result<()> {
-        let unique_files = {
-            let clients = self.clients.lock().await;
-            let mut unique_files = HashSet::new();
-            for client in clients.values() {
-                for file in &client.files {
-                    unique_files.insert(file.clone());
-                }
-            }
-            unique_files
-        };
+    /// Read all files currently open by any client from disk and generate a
+    /// `textDocument/didChange` notification with the full content for each
+    /// of them.
+    pub async fn sync_files_from_disk(&self) -> Result<()> {
+        let unique_files = self
+            .clients
+            .lock()
+            .await
+            .values()
+            .flat_map(|client| client.files.iter().cloned())
+            .collect::<HashSet<String>>();
 
         for uri in unique_files {
-            let path = match lsp::parse_root_uri(&uri) {
+            let path = match lsp::parse_file_uri(&uri) {
                 Ok(path) => path,
                 Err(err) => {
                     warn!(?uri, ?err, "failed to parse URI");
@@ -359,10 +466,7 @@ impl Instance {
             };
 
             let params = lsp::DidChangeTextDocumentParams {
-                text_document: lsp::VersionedTextDocumentIdentifier {
-                    uri,
-                    version: None,
-                },
+                text_document: lsp::VersionedTextDocumentIdentifier { uri, version: None },
                 content_changes: vec![lsp::TextDocumentContentChangeEvent { text }],
             };
 
@@ -372,9 +476,9 @@ impl Instance {
                 params: serde_json::to_value(params).unwrap(),
             };
 
-            if let Err(err) = self.send_message(notif.into()).await {
-                warn!(?err, "failed to send sync notification to server");
-            }
+            self.send_message(notif.into())
+                .await
+                .context("instance closed")?;
         }
 
         Ok(())
@@ -395,21 +499,22 @@ impl InstanceMap {
     }
 
     /// Finds an instance with the longest path such as
-    /// `cwd.starts_with(workspace_root)` is true
+    /// `cwd.starts_with(workspace_root)` is true.
+    ///
+    /// This returns owned data to allow callers to drop the lock immediately.
     pub fn get_by_cwd(&self, cwd: &str) -> Option<Arc<Instance>> {
         self.0
             .iter()
-            .filter(|(key, _)| Path::new(cwd).starts_with(&key.workspace_root))
-            .max_by_key(|(key, _)| key.workspace_root.len())
+            .filter(|(key, _)| Path::new(cwd).starts_with(&key.workspace_root.path))
+            .max_by_key(|(key, _)| key.workspace_root.path.len())
             .map(|(_, inst)| inst.clone())
     }
 
-    pub async fn get_status(&self) -> ext::StatusResponse {
-        let mut instances = Vec::with_capacity(self.0.len());
-        for instance in self.0.values() {
-            instances.push(instance.get_status().await);
-        }
-        ext::StatusResponse { instances }
+    /// Return a snapshot of instances.
+    ///
+    /// This returns owned data to allow callers to drop the lock immediately.
+    pub fn instances(&self) -> Vec<Arc<Instance>> {
+        self.0.values().cloned().collect()
     }
 }
 
@@ -424,16 +529,21 @@ async fn gc_task(
     loop {
         interval.tick().await;
 
-        for (key, instance) in &instance_map.lock().await.0 {
+        let instances = instance_map.lock().await.instances();
+        for instance in &instances {
+            // The instance might have been removed from the map since we took
+            // the snapshot. If so, wait_task has already exited and
+            // notify_one below is a no-op. Otherwise, wait_task will receive
+            // the notification and kill the child.
             let clients = instance.clients.lock().await;
 
             let idle = instance.idle();
-            debug!(path = ?key.workspace_root, idle, clients = clients.len(), "check instance");
+            debug!(path = ?instance.key.workspace_root, idle, clients = clients.len(), "check instance");
 
             if let Some(instance_timeout) = instance_timeout {
                 // Close timed out instance
                 if idle > i64::from(instance_timeout) && clients.is_empty() {
-                    info!(pid = instance.pid, path = ?key.workspace_root, idle, "instance timed out");
+                    info!(pid = instance.pid, path = ?instance.key.workspace_root, idle, "instance timed out");
                     instance.close.notify_one();
                 }
             }
@@ -451,6 +561,7 @@ pub async fn get_or_spawn(
     map: Arc<Mutex<InstanceMap>>,
     key: InstanceKey,
     init_req_params: lsp::InitializeParams,
+    client: Client,
 ) -> Result<Arc<Instance>> {
     // We have locked a clone of an Arc of the map, we can assume noone else
     // tries to spawn the same instance again. But we have to make sure `spawn`
@@ -460,10 +571,11 @@ pub async fn get_or_spawn(
     match map.clone().lock().await.0.entry(key.clone()) {
         Entry::Occupied(e) => {
             info!("reusing language server instance");
+            e.get().add_client(client).await;
             Ok(e.get().clone())
         }
         Entry::Vacant(e) => {
-            let instance = spawn(key, init_req_params, map)
+            let instance = spawn(key, init_req_params, map, client)
                 .await
                 .context("spawning instance")?;
             e.insert(instance.clone());
@@ -475,16 +587,17 @@ pub async fn get_or_spawn(
 #[instrument(name = "instance", fields(pid = field::Empty), skip_all, parent = None)]
 async fn spawn(
     key: InstanceKey,
-    init_req_params: lsp::InitializeParams,
+    mut init_req_params: lsp::InitializeParams,
     // Caller `get_or_spawn` is holding a lock to the map, we must not try to
     // lock it within this function to not cause deadlock, only spawned tasks
     // are allowed to lock it again.
     map: Arc<Mutex<InstanceMap>>,
+    client: Client,
 ) -> Result<Arc<Instance>> {
     let mut child = Command::new(&key.server)
         .args(&key.args)
         .envs(&key.env)
-        .current_dir(&key.workspace_root)
+        .current_dir(&key.workspace_root.path)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -523,6 +636,12 @@ async fn spawn(
     let stdin = child.stdin.take().unwrap();
     let mut writer = LspWriter::new(stdin, "server");
 
+    // Some LSP servers monitor client PIDs and exit if none remain (as
+    // documented in the LSP spec). We need to replace the client PID in the
+    // initialization request with lspmux server PID to prevent the server from
+    // exitting when the original client exits.
+    init_req_params.process_id = Some(std::process::id() as u64);
+
     let init_result = initialize_handshake(init_req_params, &mut reader, &mut writer)
         .await
         .context("server handshake")?;
@@ -531,12 +650,19 @@ async fn spawn(
 
     let (message_writer, rx) = mpsc::channel(64);
 
+    let mut clients = HashMap::new();
+    let client = ClientData {
+        client,
+        files: HashSet::new(),
+    };
+    clients.insert(client.id(), client);
+
     let instance = Arc::new(Instance {
         key,
         pid,
         init_result,
         server: message_writer,
-        clients: Mutex::default(),
+        clients: Mutex::new(clients),
         dynamic_capabilities: Mutex::default(),
         close: Notify::new(),
         last_used: AtomicI64::new(elapsed_seconds()),
@@ -573,14 +699,37 @@ async fn initialize_handshake(
         .await
         .context("send initialize request")?;
 
-    let res = match reader
-        .read_message()
-        .await
-        .context("receive initialize response")?
-        .context("stream ended")?
-    {
-        Message::ResponseSuccess(res) if res.id == request_id => res,
-        _ => bail!("first server message was not initialize response"),
+    // TODO: Ignoring messages here is not ideal. The spec explicitly permits
+    // sending `window/showMessage`, `window/logMessage`, `telemetry/event`,
+    // `window/showMessageRequest` and when configured also `$/progress` [1],
+    // which we should forward to the client(s). Not forwarding them means
+    // the server will appear unresponsive while it's initializing.
+    //
+    // [1]: https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#initialize
+    //
+    // FIXME: The larger problem with this approach is that some servers (e.g.
+    // `kotlin-language-server`) do not respond with an initialize response
+    // immediately, but block until they've indexed the whole project. And
+    // we hold the `InstanceMap` lock _the whole time_ this loop is waiting,
+    // the lock held in `instance::get_or_spawn` -> `instance::spawn` ->
+    // `instance::initialize_handshake` which blocks _any_ connection to the
+    // lspmux client, as all the functions called from `client::process` sooner
+    // or later need to lock the `InstanceMap` as well.
+    let res = loop {
+        match reader
+            .read_message()
+            .await
+            .context("receive initialize response")?
+            .context("stream ended")?
+        {
+            Message::ResponseSuccess(res) if res.id == request_id => break res,
+            msg => {
+                warn!(
+                    ?msg,
+                    "ignoring message while waiting for initialize response"
+                );
+            }
+        }
     };
     let result = serde_json::from_value(res.result).context("parse initialize response result")?;
 
@@ -708,8 +857,10 @@ async fn stdout_task(instance: Arc<Instance>, mut reader: LspReader<BufReader<Ch
             }
         };
 
-        // Lock _after_ we have a message to send, then send and immediately release the lock
-        let clients = instance.clients.lock().await;
+        // Each match arm holds a lock for as little as possible (this is
+        // encapsulated within `get_client`, etc). The lock protocol prevents a
+        // slow client from holding the lock and blocking all other clients and
+        // lock-dependent operations.
         match message {
             Message::ResponseSuccess(mut res) => {
                 // Forward successful response to the right client based on the
@@ -717,7 +868,7 @@ async fn stdout_task(instance: Arc<Instance>, mut reader: LspReader<BufReader<Ch
                 match res.id.untag() {
                     (Some(Tag::ClientId(client_id)), id) => {
                         res.id = id;
-                        if let Some(client) = clients.get(&client_id) {
+                        if let Some(client) = instance.get_client(client_id).await {
                             let _ = client.send_message(res.into()).await;
                         } else {
                             debug!(?client_id, "no matching client");
@@ -739,7 +890,7 @@ async fn stdout_task(instance: Arc<Instance>, mut reader: LspReader<BufReader<Ch
                     (Some(Tag::ClientId(client_id)), id) => {
                         warn!(?res, "server responded with error");
                         res.id = id;
-                        if let Some(client) = clients.get(&client_id) {
+                        if let Some(client) = instance.get_client(client_id).await {
                             let _ = client.send_message(res.into()).await;
                         } else {
                             debug!(?client_id, "no matching client");
@@ -774,7 +925,7 @@ async fn stdout_task(instance: Arc<Instance>, mut reader: LspReader<BufReader<Ch
                 let id = req.id;
                 req.id = id.tag(Tag::Drop);
 
-                for client in clients.values() {
+                for client in instance.clients().await {
                     let _ = client.send_message(req.clone().into()).await;
                 }
 
@@ -790,7 +941,7 @@ async fn stdout_task(instance: Arc<Instance>, mut reader: LspReader<BufReader<Ch
 
                 req.id = req.id.tag(Tag::Forward);
 
-                if let Some(client) = clients.values().next() {
+                if let Some(client) = instance.one_client().await {
                     let _ = client.send_message(req.into()).await;
                 } else {
                     // If there is no client connected at this moment we'll
@@ -808,14 +959,16 @@ async fn stdout_task(instance: Arc<Instance>, mut reader: LspReader<BufReader<Ch
                 let id = req.id;
                 req.id = id.tag(Tag::Drop);
 
-                for client in clients.values() {
-                    let _ = client.send_message(req.clone().into()).await;
+                // Cache before broadcasting so that a client connecting
+                // between the cache update and the broadcast will see
+                // the capability via add_client's replay. The worst case
+                // is a duplicate registerCapability, which is benign.
+                if let Err(err) = instance.register_capabilities(req.params.clone()).await {
+                    warn!(?err, "error registering capabilities");
                 }
 
-                // We need to cache the dynamic capabilities registrations for
-                // any client that might come later.
-                if let Err(err) = instance.register_capabilities(req.params).await {
-                    warn!(?err, "error registering capabilities");
+                for client in instance.clients().await {
+                    let _ = client.send_message(req.clone().into()).await;
                 }
 
                 let _ = instance
@@ -833,14 +986,15 @@ async fn stdout_task(instance: Arc<Instance>, mut reader: LspReader<BufReader<Ch
                 let id = req.id;
                 req.id = id.tag(Tag::Drop);
 
-                for client in clients.values() {
-                    let _ = client.send_message(req.clone().into()).await;
+                // Uncache before broadcasting so that a client connecting
+                // between the cache update and the broadcast won't receive
+                // the stale capability via add_client's replay.
+                if let Err(err) = instance.unregister_capabilities(req.params.clone()).await {
+                    warn!(?err, "error unregistering capabilities");
                 }
 
-                // We need to remove this registration from the cache so we
-                // don't announce it to new clients anymore.
-                if let Err(err) = instance.unregister_capabilities(req.params).await {
-                    warn!(?err, "error unregistering capabilities");
+                for client in instance.clients().await {
+                    let _ = client.send_message(req.clone().into()).await;
                 }
 
                 let _ = instance
@@ -858,7 +1012,7 @@ async fn stdout_task(instance: Arc<Instance>, mut reader: LspReader<BufReader<Ch
             Message::Notification(notif) => {
                 // Server notifications don't expect a response. We can forward
                 // them to all clients.
-                for client in clients.values() {
+                for client in instance.clients().await {
                     let _ = client.send_message(notif.clone().into()).await;
                 }
             }

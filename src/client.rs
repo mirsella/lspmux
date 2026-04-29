@@ -11,7 +11,7 @@ use tokio::sync::{mpsc, Mutex};
 use tokio::task;
 use tracing::{debug, error, info, warn, Instrument};
 
-use crate::instance::{self, Instance, InstanceKey, InstanceMap};
+use crate::instance::{self, Instance, InstanceKey, InstanceMap, WorkspaceRoot};
 use crate::lsp::ext::{self, LspMuxOptions, Tag};
 use crate::lsp::jsonrpc::{
     self, Message, Request, RequestId, ResponseError, ResponseSuccess, Version,
@@ -110,7 +110,16 @@ async fn status(
     instance_map: Arc<Mutex<InstanceMap>>,
     mut writer: LspWriter<OwnedWriteHalf>,
 ) -> Result<()> {
-    let status = instance_map.lock().await.get_status().await;
+    let instances = instance_map.lock().await.instances();
+
+    let mut status_instances = Vec::with_capacity(instances.len());
+    for instance in &instances {
+        status_instances.push(instance.get_status().await);
+    }
+    let status = ext::StatusResponse {
+        instances: status_instances,
+    };
+
     writer
         .write_message(&Message::ResponseSuccess(ResponseSuccess {
             jsonrpc: Version,
@@ -127,6 +136,11 @@ async fn reload(
     mut writer: LspWriter<OwnedWriteHalf>,
 ) -> Result<()> {
     let instance = instance_map.lock().await.get_by_cwd(&cwd);
+    // The instance map lock is acquired above, then dropped immediately.
+    // There's a small TOCTTOU window here between the lock being released
+    // and the instance being closed, but this is benign: if the instance is
+    // replaced with another one in this window, we want to try and send a
+    // message to the old instance, not the new one.
     if let Some(instance) = instance {
         instance
             .send_message(Message::Request(Request {
@@ -170,8 +184,16 @@ async fn sync(
     mut writer: LspWriter<OwnedWriteHalf>,
 ) -> Result<()> {
     let instance = instance_map.lock().await.get_by_cwd(&cwd);
+    // The instance map lock is acquired above, then dropped immediately.
+    // There's a small TOCTTOU window here between the lock being released
+    // and the instance being closed, but this is benign: if the instance is
+    // replaced with another one in this window, we want to try and send a
+    // message to the old instance, not the new one.
     if let Some(instance) = instance {
-        instance.sync_files().await.context("sync files")?;
+        instance
+            .sync_files_from_disk()
+            .await
+            .context("sync files from disk")?;
 
         writer
             .write_message(&Message::ResponseSuccess(ResponseSuccess::null(
@@ -216,6 +238,10 @@ async fn connect(
     // Select the workspace root directory.
     let workspace_root = select_workspace_root(&init_params, cwd.as_deref())
         .context("could not get any workspace_root")?;
+    let workspace_root = task::spawn_blocking(move || WorkspaceRoot::from_path(workspace_root))
+        .await
+        .expect("blocking task panicked")
+        .context("get workspace_root metadata")?;
 
     // Get an language server instance for this client.
     let key = InstanceKey {
@@ -224,7 +250,8 @@ async fn connect(
         env,
         workspace_root,
     };
-    let instance = instance::get_or_spawn(instance_map, key, init_params).await?;
+    let (client, client_rx) = Client::new(client_id);
+    let instance = instance::get_or_spawn(instance_map, key, init_params, client.clone()).await?;
 
     // Respond to client's `initialize` request using a response result from
     // the first time this server instance was initialized, it might not be
@@ -256,10 +283,7 @@ async fn connect(
     }
     info!("initialized client");
 
-    let (client, client_rx) = Client::new(client_id);
     task::spawn(input_task(client_rx, writer).in_current_span());
-    instance.add_client(client.clone()).await;
-
     task::spawn(output_task(reader, client, instance).in_current_span());
 
     Ok(())
@@ -281,7 +305,7 @@ fn select_workspace_root<'a>(
     }
 
     if workspace_folders.len() == 1 {
-        return lsp::parse_root_uri(&workspace_folders[0].uri)
+        return lsp::parse_file_uri(&workspace_folders[0].uri)
             .context("parse initParams.workspaceFolders[0].uri");
     }
 
@@ -289,7 +313,7 @@ fn select_workspace_root<'a>(
 
     // Using the deprecated LSP fields `rootPath` or `rootUri` as fallback
     if let Some(root_uri) = &init_params.root_uri {
-        return lsp::parse_root_uri(root_uri).context("parse initParams.rootUri");
+        return lsp::parse_file_uri(root_uri).context("parse initParams.rootUri");
     }
     if let Some(root_path) = &init_params.root_path {
         return Ok(root_path.to_owned());

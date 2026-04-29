@@ -55,10 +55,15 @@ enum Cmd {
     /// Do nothing for other language servers.
     Reload {},
 
-    /// Synchronize file states
+    /// Reload server file state from disk
     ///
-    /// Read all files currently open by some editor from disk and generate a
-    /// `textDocument/didChange` event with the full content for each of them.
+    /// Make sure to save in all your open editors before running this command,
+    /// or the state will immediately desync again.
+    ///
+    /// Useful when multiple clients have opened the same file and have sent
+    /// conflicting edits to the server resulting in an inconstistent file
+    /// state, this often manifests as persistent syntax errors thrown by the
+    /// server.
     Sync {},
 }
 
