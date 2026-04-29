@@ -484,53 +484,6 @@ impl Instance {
         Ok(())
     }
 
-    /// Read all files currently open by any client from disk and generate a
-    /// `textDocument/didChange` notification with the full content for each
-    /// of them.
-    pub async fn sync_files_from_disk(&self) -> Result<()> {
-        let unique_files = self
-            .clients
-            .lock()
-            .await
-            .values()
-            .flat_map(|client| client.files.iter().cloned())
-            .collect::<HashSet<String>>();
-
-        for uri in unique_files {
-            let path = match lsp::parse_path_uri(&uri) {
-                Ok(path) => path,
-                Err(err) => {
-                    warn!(?uri, ?err, "failed to parse URI");
-                    continue;
-                }
-            };
-
-            let text = match tokio::fs::read_to_string(&path).await {
-                Ok(text) => text,
-                Err(err) => {
-                    warn!(?path, ?err, "failed to read file from disk");
-                    continue;
-                }
-            };
-
-            let params = lsp::DidChangeTextDocumentParams {
-                text_document: lsp::VersionedTextDocumentIdentifier { uri, version: None },
-                content_changes: vec![lsp::TextDocumentContentChangeEvent { text }],
-            };
-
-            let notif = Notification {
-                jsonrpc: Version,
-                method: "textDocument/didChange".into(),
-                params: serde_json::to_value(params).unwrap(),
-            };
-
-            self.send_message(notif.into())
-                .await
-                .context("instance closed")?;
-        }
-
-        Ok(())
-    }
 }
 
 pub struct InstanceMap(HashMap<InstanceKey, Arc<Instance>>);
