@@ -86,7 +86,12 @@ pub async fn status(config: &Config, json: bool, verbose: bool) -> Result<()> {
         println!("- Instance");
         println!("  pid: {}", instance.pid);
         println!("  server: {:?} {:?}", instance.server, instance.args);
-        println!("  path: {:?}", instance.workspace_root);
+        println!(
+            "  path: {:?} ({}, {})",
+            instance.workspace_root.path,
+            instance.workspace_root.device_id,
+            instance.workspace_root.file_id,
+        );
         if !instance.env.is_empty() {
             if verbose {
                 println!("  env:");
